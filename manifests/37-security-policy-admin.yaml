@@ -1,0 +1,98 @@
+# Admin tools (ArgoCD, Jenkins, Grafana, phpMyAdmin) answer only to the listed office/VPN addresses; everyone else gets 403.
+# Requires ClientTrafficPolicy enableProxyProtocol (34-client-traffic-policy.yaml) so the real
+# client IP, not the NLB address, is what gets matched.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: admin-ip-allowlist
+  namespace: argocd
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: prod-argocd
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: office-and-vpn
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 203.0.113.10/32
+        - 203.0.113.11/32
+        - 203.0.113.12/32
+        - 203.0.113.13/32
+        - 203.0.113.14/32
+
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: admin-ip-allowlist
+  namespace: jenkins
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: prod-jenkins
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: office-and-vpn
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 203.0.113.10/32
+        - 203.0.113.11/32
+        - 203.0.113.12/32
+        - 203.0.113.13/32
+        - 203.0.113.14/32
+
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: admin-ip-allowlist
+  namespace: monitoring-ns
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: prod-grafana
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: office-and-vpn
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 203.0.113.10/32
+        - 203.0.113.11/32
+        - 203.0.113.12/32
+        - 203.0.113.13/32
+        - 203.0.113.14/32
+
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: admin-ip-allowlist
+  namespace: prod-app-ns
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: prod-phpmyadmin
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: office-and-vpn
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 203.0.113.10/32
+        - 203.0.113.11/32
+        - 203.0.113.12/32
+        - 203.0.113.13/32
+        - 203.0.113.14/32

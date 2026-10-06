@@ -1,0 +1,72 @@
+# Linkerd identity certificates, issued and ROTATED AUTOMATICALLY by cert-manager.
+#
+# Why: Linkerd's mTLS stops working when the identity issuer certificate expires (default 1 year if you
+# create it by hand). cert-manager renews it automatically (issuer: every ~23 hours), so there is no calendar-date
+# outage waiting for you. cert-manager must be installed first (docs/02-step-1-cert-manager-and-identity.md).
+#
+# After applying, pass the trust anchor to the Linkerd chart:
+#   kubectl -n linkerd get secret linkerd-trust-anchor -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+#   helm ... --set-file identityTrustAnchorsPEM=ca.crt --set identity.issuer.scheme=kubernetes.io/tls
+# (already in 11-linkerd-control-plane-values.yaml except for the PEM itself)
+#
+# The trust anchor below lasts 10 years. Put its expiry date (see `kubectl -n linkerd get certificate`) in the
+# team calendar; replacing a trust anchor is a planned, multi-step Linkerd operation.
+# NOTE: the `linkerd` namespace is deliberately NOT declared here. Create it first, with its labels, exactly as in
+# docs/02-step-1-cert-manager-and-identity.md (re-applying a namespace without those labels would drop them).
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: linkerd-selfsigned
+  namespace: linkerd
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: linkerd-trust-anchor
+  namespace: linkerd
+spec:
+  isCA: true
+  commonName: root.linkerd.cluster.local
+  secretName: linkerd-trust-anchor
+  duration: 87600h        # 10 years
+  renewBefore: 8760h      # start the replacement process a year ahead
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: linkerd-selfsigned
+    kind: Issuer
+  usages: [cert sign, crl sign]
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: linkerd-trust-anchor
+  namespace: linkerd
+spec:
+  ca:
+    secretName: linkerd-trust-anchor
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: linkerd-identity-issuer
+  namespace: linkerd
+spec:
+  secretName: linkerd-identity-issuer
+  duration: 48h
+  renewBefore: 25h
+  issuerRef:
+    name: linkerd-trust-anchor
+    kind: Issuer
+  commonName: identity.linkerd.cluster.local
+  dnsNames:
+  - identity.linkerd.cluster.local
+  isCA: true
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: [cert sign, crl sign, server auth, client auth]

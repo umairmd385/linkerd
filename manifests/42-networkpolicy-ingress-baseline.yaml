@@ -1,0 +1,36 @@
+# OPTIONAL, defence in depth - this is a Kubernetes NetworkPolicy, not a Linkerd feature, and it covers what Linkerd
+# cannot: a pod that is NOT meshed (or whose proxy was bypassed) enforces no Linkerd policy, but the network layer
+# still drops traffic that is not explicitly allowed.
+#
+# Verified 2026-10-05: the VPC CNI network-policy agent is running (NETWORK_POLICY_ENFORCING_MODE=standard) and the
+# cluster currently has ZERO NetworkPolicies, so these objects will be enforced the moment they are applied.
+#
+# INGRESS only. Egress is not restricted (apps call Aurora, Kafka, Redis, the custody provider, the liquidity provider, SES... by name). Kubelet
+# health probes are node-originated and unaffected. Rollback: kubectl delete -f this file.
+# Apply AFTER the Envoy Gateway is serving traffic, in a window, and watch for 5xx.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod-app-ns
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-trusted-namespaces
+  namespace: prod-app-ns
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector: {}                                       # other pods in this namespace (service-to-service)
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: envoy-gateway-system}   # new edge
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: monitoring-ns}          # VictoriaMetrics scrapes proxy admin :4191
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: linkerd}                # control plane <-> proxies

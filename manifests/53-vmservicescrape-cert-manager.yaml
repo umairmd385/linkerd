@@ -1,0 +1,19 @@
+# The VMServiceScrape that already exists for cert-manager uses port name "tcp-prometheus-servicemonitor", but the Service
+# exposes the port as "http-metrics", so it matches nothing and no certmanager_* metric is collected. Without these metrics
+# the Linkerd certificate-expiry alerts in 52-vmrule-linkerd-security.yaml can never fire.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: cert-manager-metrics
+  namespace: monitoring-ns
+spec:
+  namespaceSelector:
+    matchNames: [cert-manager]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
+  endpoints:
+  - port: http-metrics
+    path: /metrics
+    interval: 60s

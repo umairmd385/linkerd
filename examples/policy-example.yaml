@@ -1,0 +1,70 @@
+# EXAMPLE: allow only known callers into one service.   (docs/09-step-8-security-policy.md)
+# Read it as one sentence: "The Server orders-3008 accepts connections only from the callers named in
+# callers-orders (and, for its HTTP port, from the edge gateway)."
+#
+# In practice you do not write these by hand: scripts/gen_linkerd_policy.py builds them for every service from the live
+# cluster and the call graph. This file only shows what the generated objects look like.
+#
+# 1. WHO: a list of mesh identities. An identity is  <serviceaccount>.<namespace>.serviceaccount.identity.linkerd.cluster.local
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: callers-orders
+  namespace: prod-app-ns
+spec:
+  identities:
+  - prod-backend-users-service.prod-app-ns.serviceaccount.identity.linkerd.cluster.local
+  - prod-backend-wallet-main-service.prod-app-ns.serviceaccount.identity.linkerd.cluster.local
+---
+# the edge gateway's identity (its ServiceAccount name is generated; read it with:
+#   kubectl -n envoy-gateway-system get pod -l gateway.envoyproxy.io/owning-gateway-name=prod-edge-gateway \
+#     -o jsonpath='{.items[0].spec.serviceAccountName}' )
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: gateway-mtls
+  namespace: prod-app-ns
+spec:
+  identities:
+  - envoy-envoy-gateway-system-prod-edge-gateway-0a1b2c3d.envoy-gateway-system.serviceaccount.identity.linkerd.cluster.local
+---
+# 2. WHAT: this port of these pods.   accessPolicy says what happens to callers that no policy allows:
+#      all-unauthenticated = allow everyone (today's production default)
+#      audit               = allow, but record what WOULD be denied (start here)
+#      deny                = block
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: orders-3008
+  namespace: prod-app-ns
+spec:
+  podSelector:
+    matchLabels: {app: orders}        # the pod label of the Deployment
+  port: 3008                          # the container port
+  proxyProtocol: unknown              # "unknown" = let the proxy detect HTTP; use "opaque" for raw TCP such as Redis
+  accessPolicy: audit
+---
+# 3. THE RULE: connect the Server to the allowed identities. One AuthorizationPolicy per allowed list.
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: orders-3008-callers
+  namespace: prod-app-ns
+spec:
+  targetRef: {group: policy.linkerd.io, kind: Server, name: orders-3008}
+  requiredAuthenticationRefs:
+  - {group: policy.linkerd.io, kind: MeshTLSAuthentication, name: callers-orders}
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: orders-3008-gateway
+  namespace: prod-app-ns
+spec:
+  targetRef: {group: policy.linkerd.io, kind: Server, name: orders-3008}
+  requiredAuthenticationRefs:
+  - {group: policy.linkerd.io, kind: MeshTLSAuthentication, name: gateway-mtls}
+#
+# Kubelet health probes are always allowed by Linkerd and need no policy.
+# Check:  kubectl -n prod-app-ns get server,authorizationpolicy,meshtlsauthentication
+#         kubectl -n prod-app-ns describe server orders-3008

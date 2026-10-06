@@ -1,0 +1,122 @@
+# Alerts for the mesh security layer. Delivered through the existing VMAlert -> Alertmanager -> calert -> Google Chat path.
+# Reviewed 2026-10-06 against the live VictoriaMetrics: every expression below was evaluated and the metric names exist
+# (response_total, response_latency_ms_bucket, kube_*), EXCEPT where noted:
+#  - inbound_*_authz_deny_total only appears after the first denial (policy is still all-unauthenticated), so the two
+#    denial alerts stay silent until the Linkerd policy phase enforces something - expected.
+#  - certmanager_* needs 53-vmservicescrape-cert-manager.yaml (apply it first); the existing scrape never matched.
+# Apply 53 before this file.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: linkerd-security-alerts
+  namespace: monitoring-ns
+  labels:
+    app.kubernetes.io/part-of: victoria-metrics
+spec:
+  groups:
+  - name: linkerd.security
+    rules:
+    # A pod without the proxy enforces no Linkerd policy and sends no mTLS - the quiet way security erodes.
+    - alert: PodWithoutLinkerdProxy
+      expr: |
+        (kube_pod_status_phase{namespace="prod-app-ns",phase="Running"} == 1)
+        unless on (namespace, pod)
+        count by (namespace, pod) (
+          kube_pod_container_info{namespace="prod-app-ns",container="linkerd-proxy"}
+          or
+          kube_pod_init_container_info{namespace="prod-app-ns",container="linkerd-proxy"}   # native sidecar mode
+        )
+      for: 10m
+      labels: {severity: critical}
+      annotations:
+        summary: "Pod runs without a Linkerd proxy"
+        description: "{{ $labels.namespace }}/{{ $labels.pod }} has no linkerd-proxy: no mTLS, no policy enforcement."
+
+    # Denied requests = a caller that is not allowed (attack, scan, or a missing policy after a deploy).
+    - alert: LinkerdPolicyDenials
+      expr: sum by (deployment) (rate(inbound_http_authz_deny_total{namespace="prod-app-ns"}[5m])) > 0.2
+      for: 10m
+      labels: {severity: warning}
+      annotations:
+        summary: "Linkerd is denying requests to {{ $labels.deployment }}"
+        description: "Sustained policy denials. Check the caller identity (client_id) - unexpected caller or a service missing from the policy."
+
+    - alert: LinkerdTcpPolicyDenials
+      expr: sum by (deployment, statefulset) (rate(inbound_tcp_authz_deny_total{namespace="prod-app-ns"}[5m])) > 0.2
+      for: 10m
+      labels: {severity: warning}
+      annotations:
+        summary: "Linkerd is denying TCP connections (Redis/opaque ports)"
+
+    # cert-manager renews the 48 h identity issuer around the 25 h mark; if it stops, mTLS ends in a day.
+    - alert: LinkerdIdentityIssuerNotRenewing
+      expr: (certmanager_certificate_expiration_timestamp_seconds{name="linkerd-identity-issuer"} - time()) < 12 * 3600
+      for: 5m
+      labels: {severity: critical}
+      annotations:
+        summary: "Linkerd identity issuer certificate expires in under 12h"
+        description: "cert-manager is not renewing it. Every new pod will fail to get an identity once it expires."
+
+    - alert: LinkerdTrustAnchorExpiring
+      expr: (certmanager_certificate_expiration_timestamp_seconds{name="linkerd-trust-anchor"} - time()) < 90 * 86400
+      for: 1h
+      labels: {severity: warning}
+      annotations:
+        summary: "Linkerd trust anchor expires in under 90 days - start the planned rotation"
+
+    - alert: LinkerdControlPlaneDown
+      expr: kube_deployment_status_replicas_available{namespace="linkerd"} == 0
+      for: 3m
+      labels: {severity: critical}
+      annotations:
+        summary: "Linkerd control plane component {{ $labels.deployment }} has no available replicas"
+
+    - alert: LinkerdCertMetricsMissing
+      expr: absent(certmanager_certificate_expiration_timestamp_seconds{name="linkerd-identity-issuer"})
+      for: 30m
+      labels: {severity: warning}
+      annotations:
+        summary: "cert-manager metrics for the Linkerd identity issuer are missing"
+        description: "The certificate-expiry alerts are blind. Check the cert-manager-metrics scrape target."
+
+  - name: linkerd.reliability
+    rules:
+    # Edge: what clients get. Linkerd sees the Envoy Gateway's outbound calls; classification=failure is a 5xx / gRPC error.
+    - alert: EdgeHigh5xxRate
+      expr: |
+        sum(rate(response_total{direction="outbound",namespace="envoy-gateway-system",classification="failure"}[5m]))
+          / sum(rate(response_total{direction="outbound",namespace="envoy-gateway-system"}[5m])) > 0.05
+        and sum(rate(response_total{direction="outbound",namespace="envoy-gateway-system"}[5m])) > 0.5
+      for: 5m
+      labels: {severity: critical}
+      annotations:
+        summary: "More than 5% of requests through the edge gateway are failing"
+        description: "Check Linkerd / Overview and the failing workload below it; compare with the last deployment."
+
+    - alert: EdgeGatewayDegraded
+      expr: kube_deployment_status_replicas_available{namespace="envoy-gateway-system",deployment=~"envoy-.*prod-edge-gateway.*"} < 2
+      for: 5m
+      labels: {severity: critical}
+      annotations:
+        summary: "Envoy Gateway has fewer than 2 available proxy pods (single point of failure for all public traffic)"
+
+    # Service level: a service whose own responses fail while it is up (the case pod-restart alerts miss).
+    - alert: ServiceSuccessRateLow
+      expr: |
+        (sum by (deployment) (rate(response_total{direction="inbound",namespace="prod-app-ns",classification="success"}[10m]))
+           / sum by (deployment) (rate(response_total{direction="inbound",namespace="prod-app-ns"}[10m])) < 0.95)
+        and sum by (deployment) (rate(response_total{direction="inbound",namespace="prod-app-ns"}[10m])) > 0.1
+      for: 10m
+      labels: {severity: warning}
+      annotations:
+        summary: "{{ $labels.deployment }} success rate below 95%"
+        description: "Inbound success rate as measured by the Linkerd proxy over the last 10 minutes."
+
+    - alert: ServiceLatencyHigh
+      expr: |
+        histogram_quantile(0.95, sum by (deployment, le) (rate(response_latency_ms_bucket{direction="inbound",namespace="prod-app-ns",deployment!~"prod-backend-socket-service"}[10m]))) > 2000
+      for: 15m
+      labels: {severity: warning}
+      annotations:
+        summary: "{{ $labels.deployment }} p95 latency above 2 s"
+        description: "The socket service is excluded because WebSocket sessions are long-lived by design."

@@ -1,0 +1,50 @@
+# EXAMPLE: put one service into the Linkerd mesh.   (docs/06-step-5-mesh-your-services.md)
+#
+# 1. Create the service's own identity first (a missing ServiceAccount blocks pod creation):
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service                  # use the same name as the Deployment
+  namespace: prod-app-ns
+automountServiceAccountToken: false # the app does not call the Kubernetes API; Linkerd uses its own token
+---
+# 2. Add the three lines marked <== to the Deployment's POD TEMPLATE (not to the Deployment's own metadata).
+#    Existing pods are never changed: Kubernetes does a rolling update and the NEW pods get the proxy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service
+  namespace: prod-app-ns
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}     # zero-downtime update
+  selector:
+    matchLabels: {app: my-service}
+  template:
+    metadata:
+      labels: {app: my-service}
+      annotations:
+        linkerd.io/inject: enabled                      # <== adds linkerd-init + linkerd-proxy to the pod
+        config.linkerd.io/access-log: json              # <== proxy logs one JSON line per request (log_type:mesh_access)
+        # config.linkerd.io/opaque-ports: "6379"        # only for raw-TCP services such as Redis; also list the port in proxy.opaquePorts
+        # karpenter.sh/do-not-disrupt: "true"           # only for stateful pods that must not be moved by node consolidation
+    spec:
+      serviceAccountName: my-service                    # <== the identity from step 1
+      containers:
+      - name: my-service
+        image: <registry>/my-service:1.0.0
+        ports: [{containerPort: 8080}]
+        readinessProbe: {httpGet: {path: /health, port: 8080}}   # kubelet probes keep working through the proxy
+
+# For a Helm chart (as in the production GitOps repo) the same three settings go into the service's values file:
+#   deployment:
+#     serviceAccountName: my-service
+#     podAnnotations:
+#       linkerd.io/inject: enabled
+#       config.linkerd.io/access-log: json
+#
+# Verify:  kubectl -n prod-app-ns get pod -l app=my-service            -> READY 2/2
+#          kubectl -n prod-app-ns get pod <pod> -o jsonpath='{.spec.initContainers[*].name}'   -> linkerd-init linkerd-proxy
+#          linkerd check --proxy -n prod-app-ns
+# Undo:    remove the annotations (and serviceAccountName if you like) and roll the Deployment again.

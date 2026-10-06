@@ -1,0 +1,345 @@
+# One HTTPRoute per public hostname (and per path prefix for the API). They were first generated from the old Istio routing and
+# are now maintained by hand: to add a service see examples/httproute.yaml and docs/05-step-4-configure-the-edge.md.
+# Attach point: Gateway prod-edge-gateway (envoy-gateway-system).
+# Note: Istio 'prefix: /x' is a plain string prefix (also matches /xyz); Gateway API PathPrefix
+# matches whole path segments (/x and /x/...). Verify no client depends on the looser match.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-argocd
+  namespace: argocd
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - prod-argocd.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: argo-cd-argocd-server
+      port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-jenkins
+  namespace: jenkins
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - prod-jenkins.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: jenkins
+      port: 8080
+    timeouts:
+      request: 300s
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: X-Forwarded-Port
+          value: '443'
+        - name: X-Forwarded-Proto
+          value: https
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-grafana
+  namespace: monitoring-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - prod-grafana.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: vms-grafana
+      port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-users
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - api.example.com
+  - api.example.net
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /liquidity
+    backendRefs:
+    - name: prod-backend-liquidity-service
+      port: 3006
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /convert
+    backendRefs:
+    - name: prod-backend-swap-service
+      port: 3017
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /graph
+    backendRefs:
+    - name: prod-backend-graph-service
+      port: 3004
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /launchpad
+    backendRefs:
+    - name: prod-backend-launchpad-service
+      port: 3011
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /orders
+    backendRefs:
+    - name: prod-backend-orders-service
+      port: 3003
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /agent
+    backendRefs:
+    - name: prod-backend-otc-agent-service
+      port: 5600
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /ptp
+    backendRefs:
+    - name: prod-backend-p2p-service
+      port: 3013
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /referral
+    backendRefs:
+    - name: prod-backend-referral-service
+      port: 3007
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /stake
+    backendRefs:
+    - name: prod-backend-staking-service
+      port: 3018
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /cpt
+    backendRefs:
+    - name: prod-backend-copy-trading-service
+      port: 3009
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /wallet/cron
+    backendRefs:
+    - name: prod-backend-wallet-cron-service
+      port: 3014
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /custody
+    backendRefs:
+    - name: prod-backend-wallet-custody-service
+      port: 3005
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /wallet
+    backendRefs:
+    - name: prod-backend-wallet-main-service
+      port: 3002
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /vip
+    backendRefs:
+    - name: prod-backend-vip-service
+      port: 3002
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-users-users-retry
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - api.example.com
+  - api.example.net
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /users
+    backendRefs:
+    - name: prod-backend-users-service
+      port: 3001
+    timeouts:
+      request: 60s
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-users-notification-retry
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - api.example.com
+  - api.example.net
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /notification
+    backendRefs:
+    - name: prod-backend-email-service
+      port: 3008
+    timeouts:
+      request: 60s
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-backend-charting-library
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - chart.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: prod-backend-charting-library-service
+      port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-backend-socket
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - socket.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: prod-backend-socket-service
+      port: 8080
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-frontend-admin
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - admin.example.com
+  - admin.example.net
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: prod-frontend-admin-service
+      port: 3010
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-frontend-user
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - exchange.example.com
+  - exchange.example.net
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: prod-frontend-user-service
+      port: 3000
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prod-phpmyadmin
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - prod-phpmyadmin.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: phpmyadmin-service
+      port: 80

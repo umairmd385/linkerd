@@ -1,0 +1,52 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: prod-edge
+    namespace: envoy-gateway-system
+---
+# Mirrors the Istio Gateway: port 80 = plain HTTP, port 443 = TLS terminated at the NLB (ACM), so Envoy sees
+# plain HTTP on both. Unlike UAT the listener is port 80 (not 8080) so the NLB keeps its port-80 listener.
+# The http listener has no hostname, matching Istio's `hosts: "*"` on port 80; the live VirtualServices also
+# answer on *.example.net (one 's' less) - see README, 'Decisions needed'.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: prod-edge-gateway
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: eg
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    protocol: HTTP          # TLS ends at the NLB; this listener exists so the Service gets a 443 port
+    port: 443
+    allowedRoutes:
+      namespaces:
+        from: All
+---
+# Cross-namespace attachment. UAT hit a silent 'RefNotPermitted' without these (MIGRATION_GUIDE 0b-7), so they
+# are included up front for every namespace that owns a route.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-httproutes
+  namespace: envoy-gateway-system
+spec:
+  from:
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: prod-app-ns}
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: argocd}
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: jenkins}
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: monitoring-ns}
+  to:
+  - {group: gateway.networking.k8s.io, kind: Gateway}

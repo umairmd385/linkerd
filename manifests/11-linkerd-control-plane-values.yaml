@@ -1,0 +1,74 @@
+# Helm values for the `linkerd-control-plane` chart (chart 2026.9.3 = Linkerd edge-26.9.3), used with the `linkerd-crds` chart.
+# Install: docs/03-step-2-install-linkerd.md. VERIFY every key against the chart version you install:
+#     helm show values linkerd-edge/linkerd-control-plane --version 2026.9.3
+#
+# Sizing (measured on production, 2026-10-06):
+#  - proxy CPU request 25m: 26 proxies used about 0.2 vCPU in total (peak 90m on one). There is NO CPU limit, so a busy proxy
+#    can still use more than it requests. NOTE for autoscaling: KEDA/HPA CPU *utilisation* is usage divided by the sum of the
+#    pod's container requests, so a smaller proxy request slightly changes when CPU-based scaling triggers.
+#  - proxy memory: the proxy used 6-10 Mi; 32Mi request / 256Mi limit leaves a wide margin.
+#  - NO CPU limit on the proxy (a limit throttles it and adds latency under burst).
+
+identity:
+  issuer:
+    scheme: kubernetes.io/tls        # certificate comes from cert-manager (10-cert-manager-linkerd-identity.yaml)
+    issuanceLifetime: 24h0m0s        # lifetime of each pod's own mTLS certificate: short, so a stolen one dies in a day
+    clockSkewAllowance: 20s
+# identityTrustAnchorsPEM is supplied on the command line:  --set-file identityTrustAnchorsPEM=ca.crt
+
+# Two replicas of each control-plane component. With one, a restart of the proxy-injector lets NEW pods start without a proxy
+# (the webhook failurePolicy is Ignore), and a restart of identity/destination briefly blocks new pods. Running proxies keep
+# working on their cached certificates meanwhile.
+controllerReplicas: 2                 # destination, identity, proxy-injector
+enablePodAntiAffinity: true
+enablePodDisruptionBudget: true
+
+# Permissive default: pods that have no Server/AuthorizationPolicy accept any traffic. Tightening to 'deny' comes later,
+# with explicit policies (docs/09-step-8-security-policy.md).
+defaultInboundPolicy: all-unauthenticated
+
+proxy:
+  cores: 2                           # worker threads cap; protects against a proxy hogging every core
+  resources:
+    cpu:
+      request: 25m                   # was 100m: 26 proxies reserved 2.6 vCPU but used ~0.2 (peak 90m). No CPU limit, so a busy proxy still bursts.
+    memory:
+      request: 32Mi                  # was 64Mi: proxies use 6-10 Mi
+      limit: 256Mi
+  # Ports skipped by protocol detection (treated as plain TCP). Add-only list: Kafka 9092/9093 (Strimzi
+  # listeners), Redis 6379 and Sentinel 26379, MySQL/Aurora 3306, plus the Linkerd defaults.
+  opaquePorts: "25,587,3306,4444,5432,6379,9092,9093,9300,11211,26379"
+  logLevel: warn,linkerd=info
+
+proxyInit:
+  runAsRoot: false
+
+# The installed control plane uses nativeSidecar: true (proxy as a Kubernetes native sidecar / init container).
+# Keep it that way: the proxy then starts before the app and stops after it, which avoids dropped connections at
+# pod start and shutdown. Requires Kubernetes >= 1.29 (the cluster is 1.36).
+nativeSidecar: true
+
+# HARDENING OPTION (not enabled): cniEnabled / the linkerd2-cni chart. With the default proxy-init, EVERY app pod gets an
+# init container holding NET_ADMIN and NET_RAW. With the CNI plugin those capabilities disappear from application pods
+# and the namespace can later enforce Pod Security `baseline`. Cost: a DaemonSet on every node (including Karpenter
+# nodes, which must have it ready before pods start) and a restart of all meshed pods to switch. Istio's istio-init uses
+# the same capabilities today, so this is an improvement over the status quo rather than a regression.
+# cniEnabled: true
+
+# Control-plane pod sizing (small; tune after observing real usage)
+destinationResources:
+  cpu: {request: 50m}
+  memory: {request: 64Mi, limit: 256Mi}
+identityResources:
+  cpu: {request: 50m}
+  memory: {request: 32Mi, limit: 128Mi}
+proxyInjectorResources:
+  cpu: {request: 25m}
+  memory: {request: 32Mi, limit: 128Mi}
+spValidatorResources:
+  cpu: {request: 25m}
+  memory: {request: 32Mi, limit: 128Mi}
+policyController:
+  resources:
+    cpu: {request: 50m}
+    memory: {request: 64Mi, limit: 256Mi}

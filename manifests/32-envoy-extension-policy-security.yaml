@@ -1,0 +1,51 @@
+# Port of the live Istio EnvoyFilter `prod-istio-security-headers` (istio-system). It is NOT in Git; it was read from
+# the running cluster on 2026-10-05. The Lua body below is copied verbatim so behaviour is identical:
+#   * adds HSTS, X-Frame-Options DENY, CSP frame-ancestors 'none', nosniff, X-XSS-Protection, Referrer-Policy
+#   * removes X-Powered-By and Server from responses
+#   * strict CORS: Origin not in the 4-origin allow-list -> access-control-allow-origin: null and
+#     access-control-allow-credentials removed (overrides any backend that reflects arbitrary origins)
+# Applies to every route on the Gateway (admin tools included), exactly like the Istio filter did.
+# Requires Envoy Gateway >= 1.3 (EnvoyExtensionPolicy Lua). See 33-envoy-patch-policy-server-header.yaml for the
+# Server-header half.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: security-headers-and-cors
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: prod-edge-gateway
+  lua:
+  - type: Inline
+    inline: |
+      function envoy_on_request(request_handle)
+        local origin = request_handle:headers():get("origin")
+        if origin ~= nil then
+          if origin == "https://exchange.example.com" or origin == "https://admin.example.com" or origin == "https://exchange.example.net" or origin == "https://admin.example.net" then
+            request_handle:streamInfo():dynamicMetadata():set("envoy.lua", "allowed_origin", origin)
+          else
+            request_handle:streamInfo():dynamicMetadata():set("envoy.lua", "allowed_origin", "FORBIDDEN")
+          end
+        end
+      end
+
+      function envoy_on_response(response_handle)
+        -- Security Headers
+        response_handle:headers():replace("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+        response_handle:headers():replace("X-Frame-Options", "DENY")
+        response_handle:headers():replace("Content-Security-Policy", "frame-ancestors 'none';")
+        response_handle:headers():replace("X-Content-Type-Options", "nosniff")
+        response_handle:headers():replace("X-XSS-Protection", "1; mode=block")
+        response_handle:headers():replace("Referrer-Policy", "strict-origin-when-cross-origin")
+        response_handle:headers():remove("X-Powered-By")
+        response_handle:headers():remove("Server")
+
+        -- Enforce Strict CORS: Override any backend reflection for untrusted origins
+        local meta = response_handle:streamInfo():dynamicMetadata():get("envoy.lua")
+        if meta ~= nil and meta["allowed_origin"] == "FORBIDDEN" then
+          response_handle:headers():replace("access-control-allow-origin", "null")
+          response_handle:headers():remove("access-control-allow-credentials")
+        end
+      end

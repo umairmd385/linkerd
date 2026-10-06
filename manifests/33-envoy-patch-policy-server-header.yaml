@@ -1,0 +1,35 @@
+# The Istio security-headers filter also set `server_header_transformation: PASS_THROUGH` on the gateway's
+# HttpConnectionManager. Without it Envoy adds `server: envoy` AFTER the Lua filter has removed the Server header,
+# so the response would reveal the proxy. Envoy Gateway has no first-class field for this, so it is an
+# EnvoyPatchPolicy (raw xDS patch). This needs `enableEnvoyPatchPolicy: true` in the controller config
+# (already set in 12-envoy-gateway-values.yaml).
+#
+# Listener names are <gateway-namespace>/<gateway-name>/<listener-name>. VERIFY after applying:
+#     curl -sI https://exchange.example.com/ | grep -i '^server'     # must print nothing
+# and check `kubectl get envoypatchpolicy -n envoy-gateway-system` shows Programmed=True.
+# If the JSON path is rejected by your Envoy Gateway version, the fallback is to accept `server: envoy`
+# (low severity: it reveals the proxy product, not a version) and record it as an accepted difference.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: server-header-pass-through
+  namespace: envoy-gateway-system
+spec:
+  type: JSONPatch
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: prod-edge-gateway
+  jsonPatches:
+  - type: type.googleapis.com/envoy.config.listener.v3.Listener
+    name: envoy-gateway-system/prod-edge-gateway/http
+    operation:
+      op: add
+      path: /default_filter_chain/filters/0/typed_config/server_header_transformation
+      value: PASS_THROUGH
+  - type: type.googleapis.com/envoy.config.listener.v3.Listener
+    name: envoy-gateway-system/prod-edge-gateway/https
+    operation:
+      op: add
+      path: /default_filter_chain/filters/0/typed_config/server_header_transformation
+      value: PASS_THROUGH

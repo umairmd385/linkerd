@@ -1,0 +1,47 @@
+# Port of the live Istio EnvoyFilter `prod-istio-per-ip-rate-limit` (read from the cluster; not in Git).
+#
+# WHAT ISTIO DOES TODAY (important): the filter is a Local Rate Limit with ONE default token bucket
+#   (max 150, refill 30 per second) and no per-IP descriptor. Despite the name it is a single bucket shared by
+#   ALL clients on each ingress-gateway pod: roughly 30 requests/second sustained and a burst of 150 per pod,
+#   then HTTP 429. It is not per IP. Check the counters to see whether it ever triggers:
+#       kubectl -n istio-system exec <ingressgateway-pod> -c istio-proxy -- \
+#         pilot-agent request GET stats | grep http_local_rate_limiter
+#   (rate_limited > 0 means real traffic is being throttled today.)
+#
+# DECISION (made 2026-10-05): per-client-IP limiting, as the Istio filter's name always implied.
+# MEASURED on the new edge: at ~330 req/s from one address, 163 of 600 requests got 429 and traffic recovered after a pause.
+# Envoy's local limiter keeps a bucket per WORKER THREAD per proxy pod, so the effective ceiling per client IP is a multiple
+# of 30/s (about 120/s per pod observed). Treat it as a flood guard, not a strict quota; a strict global quota needs Envoy
+# Gateway's global rate limiter (a Redis-backed service).
+#   Each client IP gets its own bucket of 30 requests per second (the figure Istio refills at). Envoy Gateway's local
+#   limiter has no separate burst size, so it is a flat 30/s per IP; per-IP limiting is also MORE permissive overall
+#   than today's single shared bucket, so no legitimate user is throttled because another user is busy.
+#   Users behind one shared address (offices, mobile CGNAT) share a bucket: before cutover, check the real per-IP
+#   peak in the gateway access log (`x_forwarded_for` / `downstream_remote_address`, count per second) and raise
+#   `requests` if any real client approaches 30/s. 429 responses are visible as response_code 429 in VictoriaLogs.
+#   The old shared-bucket behaviour is kept as a commented rule at the bottom, for reference only.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: per-ip-rate-limit
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: prod-edge-gateway
+  rateLimit:
+    type: Local
+    local:
+      rules:
+      - clientSelectors:
+        - sourceCIDR:
+            type: Distinct          # one bucket per distinct client IP
+            value: 0.0.0.0/0
+        limit:
+          requests: 30
+          unit: Second
+      # --- REFERENCE ONLY: the behaviour of today's Istio filter (one shared bucket, no per-IP split) ---
+      # - limit:
+      #     requests: 30
+      #     unit: Second

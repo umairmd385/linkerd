@@ -1,0 +1,39 @@
+# Scrape every Linkerd proxy's /metrics (port 4191) into VictoriaMetrics.
+# Prod uses the VictoriaMetrics operator (not Prometheus Operator), so UAT's PodMonitor becomes a VMPodScrape.
+# Check that the VMAgent selects it:  kubectl -n monitoring-ns get vmagent -o yaml | grep -i selectAll
+# (victoria-metrics-k8s-stack sets selectAllByDefault: true; if yours does not, add the matching label.)
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMPodScrape
+metadata:
+  name: linkerd-proxy
+  namespace: monitoring-ns
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+    - {key: linkerd.io/control-plane-ns, operator: Exists}      # present on every injected pod
+  podMetricsEndpoints:
+  - port: linkerd-admin
+    path: /metrics
+    scheme: http
+    interval: 30s
+    relabelConfigs:
+    # Keep only the proxy's admin port. With nativeSidecar the proxy is an init container; its port is still
+    # discovered (__meta_kubernetes_pod_container_init="true"), so this keep rule matches either way.
+    - action: keep
+      sourceLabels: [__meta_kubernetes_pod_container_name]
+      regex: linkerd-proxy
+    # Same labels Linkerd's own Prometheus config adds, so the Linkerd dashboards/queries work unchanged.
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    - sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_deployment]
+      targetLabel: deployment
+    - sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_statefulset]
+      targetLabel: statefulset
+    - sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_daemonset]
+      targetLabel: daemonset
+    - sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_job]
+      targetLabel: k8s_job

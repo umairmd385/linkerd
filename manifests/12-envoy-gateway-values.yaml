@@ -1,0 +1,25 @@
+# Helm values for the Envoy Gateway controller (chart: oci://docker.io/envoyproxy/gateway-helm, pinned 1.9.2).
+#
+# CRDs are installed separately (gateway-crds-helm chart), so install this chart with `--set crds.enabled=false`.
+# Full commands: docs/04-step-3-install-envoy-gateway.md.
+deployment:
+  replicas: 1                 # the controller only translates config; the proxies that carry traffic are set in 30-envoyproxy.yaml
+  envoyGateway:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+config:
+  envoyGateway:
+    logging:
+      level:
+        default: info
+    extensionApis:
+      enableEnvoyPatchPolicy: true     # needed by 33-envoy-patch-policy-server-header.yaml
+      # Envoy Gateway disables Lua by default (security advisory GHSA-xrwg-mqj6-6m22: anyone who can create an
+      # EnvoyExtensionPolicy can run arbitrary Lua inside the proxy). 32-envoy-extension-policy-security.yaml needs it,
+      # exactly as the Istio EnvoyFilter did. CONSEQUENCE: restrict RBAC so that only platform admins can create
+      # `envoyextensionpolicies` and `envoypatchpolicies` (today only cluster-admins can; keep it that way).
+      enableLua: true

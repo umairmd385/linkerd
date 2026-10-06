@@ -1,0 +1,46 @@
+# EXAMPLE: expose a service on a public hostname through the Envoy Gateway.   (docs/05-step-4-configure-the-edge.md)
+#
+# An HTTPRoute lives in the SAME namespace as the Service it points to, and attaches to the Gateway with parentRefs.
+# If that namespace is new, add it to the ReferenceGrant in manifests/31-gatewayclass-gateway.yaml first,
+# otherwise the route stays "Accepted: False, RefNotPermitted".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-service
+  namespace: prod-app-ns
+spec:
+  parentRefs:
+  - name: prod-edge-gateway            # the Gateway
+    namespace: envoy-gateway-system
+  hostnames:
+  - my-service.example.com              # DNS (Route 53) and the ACM certificate must cover this name
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix                   # matches /x and /x/..., NOT /xyz (unlike a plain string prefix)
+        value: /
+    backendRefs:
+    - name: my-service                     # the Kubernetes Service name
+      port: 80                             # the Service port (not the container port)
+---
+# Several services behind ONE hostname (like api.example.com): one rule per path prefix.
+#   rules:
+#   - matches: [{path: {type: PathPrefix, value: /orders}}]
+#     backendRefs: [{name: prod-backend-orders-service, port: 80}]
+#   - matches: [{path: {type: PathPrefix, value: /wallet}}]
+#     backendRefs: [{name: prod-backend-wallet-main-service, port: 80}]
+#
+# Check:   kubectl get httproute -A
+#          kubectl -n prod-app-ns get httproute my-service -o jsonpath='{.status.parents[0].conditions[*].type}{" "}{.status.parents[0].conditions[*].status}'
+#          # expect Accepted True, ResolvedRefs True
+#   Test without DNS:  curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: my-service.example.com' http://$NLB/
+#
+# Admin tool? Also add a SecurityPolicy that allows only your office/VPN addresses (copy a block of manifests/37-security-policy-admin.yaml):
+#   apiVersion: gateway.envoyproxy.io/v1alpha1
+#   kind: SecurityPolicy
+#   metadata: {name: admin-ip-allowlist, namespace: prod-app-ns}
+#   spec:
+#     targetRefs: [{group: gateway.networking.k8s.io, kind: HTTPRoute, name: my-service}]
+#     authorization:
+#       defaultAction: Deny
+#       rules: [{name: office-and-vpn, action: Allow, principal: {clientCIDRs: ["203.0.113.10/32"]}}]

@@ -1,0 +1,85 @@
+# EnvoyProxy = the data-plane settings Envoy Gateway applies to the proxy pods and the NLB Service it creates.
+# It is referenced from the GatewayClass (31-gatewayclass-gateway.yaml).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: prod-edge
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        pod:
+          annotations:
+            # Mesh the edge proxies so the hop gateway -> backend is mTLS (same reason as UAT).
+            linkerd.io/inject: enabled
+            # NLB traffic arrives with a PROXY-protocol header (see 34-client-traffic-policy.yaml). It cannot be
+            # mTLS and Linkerd's protocol detection would choke on it, so inbound listener ports bypass the
+            # Linkerd proxy. Envoy listens on port+10000 for privileged ports (80 -> 10080, 443 -> 10443).
+            # VERIFY after the first deploy:  kubectl -n envoy-gateway-system get pod -o yaml | grep containerPort
+            config.linkerd.io/skip-inbound-ports: "10080,10443"
+        container:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+      envoyHpa:
+        minReplicas: 2
+        maxReplicas: 5
+        metrics:
+        - type: Resource
+          resource:
+            name: cpu
+            target:
+              type: Utilization
+              averageUtilization: 80
+      envoyService:
+        type: LoadBalancer
+        externalTrafficPolicy: Cluster
+        annotations:
+          # These annotations make the AWS Load Balancer Controller create an internet-facing NLB that sends the PROXY protocol,
+          # terminates TLS 1.3 with an ACM certificate on 443, and forwards plain TCP to the pods. Replace the certificate ARN.
+          service.beta.kubernetes.io/aws-load-balancer-type: external
+          service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+          service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+          service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+          service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: "*"
+          service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+          service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000
+          service.beta.kubernetes.io/aws-load-balancer-ssl-negotiation-policy: ELBSecurityPolicy-TLS13-1-3-2021-06
+  # Per-request JSON access log, one line per request on stdout. Vector tags these lines `log_type: edge_access`.
+  telemetry:
+    accessLog:
+      settings:
+      - format:
+          type: JSON
+          json:
+            start_time: "%START_TIME%"
+            method: "%REQ(:METHOD)%"
+            path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+            protocol: "%PROTOCOL%"
+            response_code: "%RESPONSE_CODE%"
+            response_flags: "%RESPONSE_FLAGS%"
+            response_code_details: "%RESPONSE_CODE_DETAILS%"
+            connection_termination_details: "%CONNECTION_TERMINATION_DETAILS%"
+            bytes_received: "%BYTES_RECEIVED%"
+            bytes_sent: "%BYTES_SENT%"
+            duration: "%DURATION%"
+            upstream_service_time: "%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%"
+            x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+            user_agent: "%REQ(USER-AGENT)%"
+            request_id: "%REQ(X-REQUEST-ID)%"
+            authority: "%REQ(:AUTHORITY)%"
+            upstream_host: "%UPSTREAM_HOST%"
+            upstream_cluster: "%UPSTREAM_CLUSTER%"
+            downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+            route_name: "%ROUTE_NAME%"
+            # Authorization / API-key headers are intentionally NOT logged.
+        sinks:
+        - type: File
+          file:
+            path: /dev/stdout

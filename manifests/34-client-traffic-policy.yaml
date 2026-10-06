@@ -1,0 +1,23 @@
+# The prod NLB sends the PROXY protocol header (aws-load-balancer-proxy-protocol: "*"). Today the Istio gateway
+# accepts it through the EnvoyFilter in prod-istio-envoy-filter.yaml. This is the Envoy Gateway equivalent.
+# Without it every connection from the NLB is rejected; without the header the real client IP is lost and the
+# admin IP allow-list (37-security-policy-admin.yaml) would see only NLB addresses.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: nlb-proxy-protocol
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: prod-edge-gateway
+  enableProxyProtocol: true
+  # DO NOT add `clientIPDetection` here. Setting it (even `xForwardedFor.numTrustedHops: 0`) makes Envoy take the client
+  # address from the request's X-Forwarded-For header, which a caller controls. That bug was introduced and caught during the
+  # 2026-10-05 rollout: from an allow-listed address, `X-Forwarded-For: 1.2.3.4` was refused (403), i.e. the header, not the
+  # real address, decided access - so the admin IP allow-list could have been bypassed by forging it.
+  # Without it, Envoy uses the address in the PROXY-protocol header (the real client) and ignores a client-supplied XFF.
+  timeout:
+    http:
+      idleTimeout: 3600s      # long-lived WebSocket sessions (socket.example.com); same as Envoy/Istio default
